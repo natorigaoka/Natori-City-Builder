@@ -85,8 +85,14 @@ namespace Natori.CityBuilder.Editor
                 return;
             }
             List<BuildingPartPlacement> selected = _selection.Resolve(floor);
-            _tool = (NatoriCitySelectionToolKind)GUILayout.Toolbar((int)_tool,
+            var tool = (NatoriCitySelectionToolKind)GUILayout.Toolbar((int)_tool,
                 new[] { "グリッド移動", "配置全体の回転", "各配置の回転" });
+            if (tool != _tool)
+            {
+                FinishMove();
+                _tool = tool;
+                RepaintSelection();
+            }
             EditorGUILayout.LabelField($"選択: {selected.Count}件");
             EditorGUILayout.HelpBox(_tool == NatoriCitySelectionToolKind.Move
                 ? "赤・青の矢印でX/Z方向、中央の四角でXZ平面を1セル単位で移動します。"
