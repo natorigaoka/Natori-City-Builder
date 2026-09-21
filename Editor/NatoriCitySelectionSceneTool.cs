@@ -9,6 +9,7 @@ namespace Natori.CityBuilder.Editor
     internal sealed class NatoriCitySelectionSceneTool
     {
         private readonly NatoriCityPlacementSelection _selection = new();
+        private readonly NatoriCityRotationDrag _rotationDrag = new();
         private NatoriCityBuilderInteractionMode _mode;
         private NatoriCitySelectionToolKind _tool;
         private bool _rectangleDragging;
@@ -18,7 +19,7 @@ namespace Natori.CityBuilder.Editor
         private bool _toggle;
         private string _lastPickedIdentifier;
         private List<BuildingPartPlacement> _pasteSource;
-        private int _moveUndoGroup = -1;
+        private int _gestureUndoGroup = -1;
         private int _ownedControl;
         private string _message;
 
@@ -35,7 +36,8 @@ namespace Natori.CityBuilder.Editor
         public void OnUndoRedo(BuildingFloor floor)
         {
             //Undo復元後の座標から中心を取り直し、ドラッグ中の座標を次の操作へ持ち越さない。
-            _moveUndoGroup = -1;
+            _gestureUndoGroup = -1;
+            _rotationDrag.Reset();
             ReleaseControl();
             _rectangleDragging = false;
             _pasteSource = null;
@@ -48,7 +50,7 @@ namespace Natori.CityBuilder.Editor
 
         public void Reset()
         {
-            FinishMove();
+            FinishGesture();
             ReleaseControl();
             _selection.Clear();
             _rectangleDragging = false;
@@ -70,16 +72,7 @@ namespace Natori.CityBuilder.Editor
         public void DrawToolbar(NatoriCityBuildingEditorState state, BuildingFloor floor)
         {
             int mode = GUILayout.Toolbar((int)_mode, new[] { "ペン", "単一選択", "範囲選択" });
-            if (mode != (int)_mode)
-            {
-                FinishMove();
-                ReleaseControl();
-                _mode = (NatoriCityBuilderInteractionMode)mode;
-                _rectangleDragging = false;
-                _pasteSource = null;
-                _message = null;
-                RepaintSelection();
-            }
+            SetMode((NatoriCityBuilderInteractionMode)mode);
             if (IsPen)
             {
                 return;
@@ -87,18 +80,13 @@ namespace Natori.CityBuilder.Editor
             List<BuildingPartPlacement> selected = _selection.Resolve(floor);
             var tool = (NatoriCitySelectionToolKind)GUILayout.Toolbar((int)_tool,
                 new[] { "グリッド移動", "配置全体の回転", "各配置の回転" });
-            if (tool != _tool)
-            {
-                FinishMove();
-                _tool = tool;
-                RepaintSelection();
-            }
+            SetTool(tool);
             EditorGUILayout.LabelField($"選択: {selected.Count}件");
             EditorGUILayout.HelpBox(_tool == NatoriCitySelectionToolKind.Move
                 ? "赤・青の矢印でX/Z方向、中央の四角でXZ平面を1セル単位で移動します。"
                 : _tool == NatoriCitySelectionToolKind.RotateGroup
-                    ? "黄色の中心交点の周りに、相対配置と各パーツの向きをまとめて90度回転します。"
-                    : "各配置のアンカーセル（占有範囲の最小X/Z）を固定し、向きを90度変更します。",
+                    ? "黄色の円周をドラッグすると、位置と向きをまとめて90度刻みで回転します。"
+                    : "紫の円周をドラッグすると、各アンカーセルを固定して向きを90度刻みで変更します。",
                 MessageType.None);
             EditorGUILayout.HelpBox(
                 "Shift: 追加 / Ctrl: 選択切替 / 空白クリック: 解除\n"
@@ -132,6 +120,69 @@ namespace Natori.CityBuilder.Editor
             }
         }
 
+        private void SetMode(NatoriCityBuilderInteractionMode mode)
+        {
+            if (_mode == mode)
+            {
+                return;
+            }
+            FinishGesture();
+            ReleaseControl();
+            _mode = mode;
+            _rectangleDragging = false;
+            _pasteSource = null;
+            _message = null;
+            RepaintSelection();
+        }
+
+        private void SetTool(NatoriCitySelectionToolKind tool)
+        {
+            if (_tool == tool)
+            {
+                return;
+            }
+            FinishGesture();
+            ReleaseControl();
+            _tool = tool;
+            RepaintSelection();
+        }
+
+        public void DrawSceneToolbar(BuildingFloor floor)
+        {
+            //Inspectorと同じ命令で切り替える。どちらから操作しても状態は一つだけ保持する。
+            GUILayout.BeginVertical(GUILayout.Width(232));
+            GUILayout.BeginHorizontal();
+            SetMode((NatoriCityBuilderInteractionMode)NatoriCityToolbarIcons.DrawMode((int)_mode));
+            GUILayout.Space(8);
+            int tool = NatoriCityToolbarIcons.DrawTool(IsPen ? -1 : (int)_tool);
+            if (tool >= 0)
+            {
+                if (IsPen)
+                {
+                    SetMode(NatoriCityBuilderInteractionMode.SingleSelection);
+                }
+                SetTool((NatoriCitySelectionToolKind)tool);
+            }
+            GUILayout.EndHorizontal();
+            int selectedCount = _selection.Resolve(floor).Count;
+            string modeLabel = IsPen ? "ペン" : _mode == NatoriCityBuilderInteractionMode.SingleSelection ? "単一選択" : "範囲選択";
+            GUILayout.Label(modeLabel + (IsPen ? "" : $"  /  選択: {selectedCount}件"));
+            if (!IsPen && selectedCount > 0)
+            {
+                GUILayout.Label(_tool == NatoriCitySelectionToolKind.Move ? "矢印・四角をドラッグして移動"
+                    : "円周をドラッグして90°刻みで回転");
+            }
+            if (_pasteSource != null)
+            {
+                EditorGUILayout.HelpBox("左クリックで貼り付け / Escでキャンセル", MessageType.Info);
+            }
+            if (!string.IsNullOrEmpty(_message))
+            {
+                EditorGUILayout.HelpBox(_message, MessageType.Warning);
+            }
+            GUILayout.EndVertical();
+        }
+
         public bool OnSceneGUI(SceneView sceneView, NatoriCityBuildingEditorState state, BuildingFloor floor,
             float floorHeight, bool hasGridPoint, Vector2Int hoveredCell)
         {
@@ -144,9 +195,10 @@ namespace Natori.CityBuilder.Editor
                     Vector2Int.Min(state.Building.GridSize - Vector2Int.one, hoveredCell));
             }
             List<BuildingPartPlacement> selected = _selection.Resolve(floor);
-            if (_moveUndoGroup >= 0 && GUIUtility.hotControl == 0)
+            if ((_gestureUndoGroup >= 0 || _ownedControl != 0) && GUIUtility.hotControl == 0)
             {
-                FinishMove();
+                FinishGesture();
+                _ownedControl = 0;
             }
             HandleCommands(currentEvent, state, floor, selected);
             if (IsPen)
@@ -208,7 +260,7 @@ namespace Natori.CityBuilder.Editor
             {
                 if (currentEvent.type != EventType.ValidateCommand)
                 {
-                    FinishMove();
+                    FinishGesture();
                     if (copy)
                     {
                         NatoriCityPlacementClipboard.Copy(selected);
@@ -232,10 +284,10 @@ namespace Natori.CityBuilder.Editor
             }
             else if (keyboard && currentEvent.keyCode == KeyCode.Escape)
             {
-                if (_moveUndoGroup >= 0)
+                if (_gestureUndoGroup >= 0)
                 {
-                    Undo.RevertAllDownToGroup(_moveUndoGroup);
-                    _moveUndoGroup = -1;
+                    Undo.RevertAllDownToGroup(_gestureUndoGroup);
+                    _gestureUndoGroup = -1;
                     NatoriCityBuildingEditorStateRegistry.InvalidateAll();
                 }
                 if (_pasteSource == null && !_rectangleDragging)
@@ -246,6 +298,7 @@ namespace Natori.CityBuilder.Editor
                 _rectangleDragging = false;
                 ReleaseControl();
                 _message = null;
+                _rotationDrag.Reset();
                 currentEvent.Use();
                 RepaintSelection();
             }
@@ -368,10 +421,10 @@ namespace Natori.CityBuilder.Editor
                         Mathf.RoundToInt((position.z - pivot.z) / cellSize));
                     if (offset != Vector2Int.zero)
                     {
-                        if (_moveUndoGroup < 0)
+                        if (_gestureUndoGroup < 0)
                         {
                             Undo.IncrementCurrentGroup();
-                            _moveUndoGroup = Undo.GetCurrentGroup();
+                            _gestureUndoGroup = Undo.GetCurrentGroup();
                             Undo.SetCurrentGroupName("Move Natori City Builder Selection");
                         }
                         if (NatoriCityPlacementBatch.Apply(state, floor, selected,
@@ -395,7 +448,31 @@ namespace Natori.CityBuilder.Editor
                     Handles.DrawWireDisc(anchor, Vector3.up, state.Building.Settings.HorizontalCellSize * 0.3f);
                 }
             }
-            Handles.DrawWireDisc(pivot, Vector3.up, size);
+            //表示専用の円ではなく、円周全体で入力を取得する回転ハンドルを使用する。
+            //標準ハンドルがhotControlを所有するため、範囲選択のドラッグと競合しない。
+            EditorGUI.BeginChangeCheck();
+            Quaternion rotation = Handles.Disc(_rotationDrag.HandleRotation, pivot, Vector3.up, size, false, 90.0f);
+            if (EditorGUI.EndChangeCheck())
+            {
+                int turns = _rotationDrag.Update(rotation);
+                if (turns != 0)
+                {
+                    if (_gestureUndoGroup < 0)
+                    {
+                        Undo.IncrementCurrentGroup();
+                        _gestureUndoGroup = Undo.GetCurrentGroup();
+                        Undo.SetCurrentGroupName("Rotate Natori City Builder Selection");
+                    }
+                    if (Rotate(state, floor, selected, turns))
+                    {
+                        _rotationDrag.Accept(turns);
+                    }
+                }
+            }
+            if (GUIUtility.hotControl != 0)
+            {
+                _ownedControl = GUIUtility.hotControl;
+            }
             Handles.Label(pivot + Vector3.forward * size,
                 _tool == NatoriCitySelectionToolKind.RotateGroup ? "配置全体の回転中心" : "各配置のアンカーを固定");
             Quaternion clockwise = Quaternion.LookRotation(Vector3.back, Vector3.up);
@@ -414,23 +491,25 @@ namespace Natori.CityBuilder.Editor
             }
         }
 
-        private void FinishMove()
+        private void FinishGesture()
         {
-            if (_moveUndoGroup >= 0)
+            if (_gestureUndoGroup >= 0)
             {
-                Undo.CollapseUndoOperations(_moveUndoGroup);
-                _moveUndoGroup = -1;
+                Undo.CollapseUndoOperations(_gestureUndoGroup);
+                _gestureUndoGroup = -1;
             }
+            _rotationDrag.Reset();
         }
 
-        private void Rotate(NatoriCityBuildingEditorState state, BuildingFloor floor,
+        private bool Rotate(NatoriCityBuildingEditorState state, BuildingFloor floor,
             List<BuildingPartPlacement> selected, int turns)
         {
             bool asGroup = _tool != NatoriCitySelectionToolKind.RotateEach;
-            NatoriCityPlacementBatch.Apply(state, floor, selected,
+            bool applied = NatoriCityPlacementBatch.Apply(state, floor, selected,
                 NatoriCityPlacementBatch.Transform(selected, Vector2Int.zero, turns, asGroup, _selection.Pivot),
                 asGroup ? "Rotate Natori City Builder Selection" : "Rotate Each Natori City Builder Part", out _message);
             RepaintSelection();
+            return applied;
         }
 
         private void Delete(NatoriCityBuildingEditorState state, BuildingFloor floor, List<BuildingPartPlacement> selected)

@@ -70,6 +70,20 @@ namespace Natori.CityBuilder.Editor
             return Instance._selectionTool.IsPen;
         }
 
+        internal static void DrawSceneToolbar()
+        {
+            BuildingFloor floor = NatoriCityBuilderEditingSession.GetEditingFloor();
+            if (floor == null)
+            {
+                return;
+            }
+            Instance._selectionTool.DrawSceneToolbar(floor);
+            if (!Instance._selectionTool.IsPen)
+            {
+                Instance.FinishPaintingStroke();
+            }
+        }
+
         private void OnSceneGUI(SceneView sceneView)
         {
             NatoriCityBuildingComponent building = NatoriCityBuilderEditingSession.Building;
