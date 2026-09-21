@@ -13,8 +13,8 @@ namespace Natori.CityBuilder.Editor
         private NatoriCityBuilderInteractionMode _mode;
         private NatoriCitySelectionToolKind _tool;
         private bool _rectangleDragging;
-        private Vector2Int _rectangleStart;
-        private Vector2Int _rectangleEnd;
+        private Vector2 _rectangleStart;
+        private Vector2 _rectangleEnd;
         private bool _additive;
         private bool _toggle;
         private string _lastPickedIdentifier;
@@ -90,7 +90,7 @@ namespace Natori.CityBuilder.Editor
                 MessageType.None);
             EditorGUILayout.HelpBox(
                 "Shift: 追加 / Ctrl: 選択切替 / 空白クリック: 解除\n"
-                + "範囲選択: 占有範囲が触れた配置すべて。単一選択: 重なりをクリック順に選択。\n"
+                + "範囲選択: 画面の矩形と占有面の投影が交差する配置。単一選択: 重なりをクリック順に選択。\n"
                 + "Ctrl+C/V: コピー・貼り付け / Delete: 削除 / Esc: キャンセル",
                 MessageType.Info);
             using (new EditorGUI.DisabledScope(selected.Count == 0 || _pasteSource != null))
@@ -189,11 +189,6 @@ namespace Natori.CityBuilder.Editor
             Event currentEvent = Event.current;
             bool hasCell = hasGridPoint && hoveredCell.x >= 0 && hoveredCell.y >= 0
                 && hoveredCell.x < state.Building.GridSize.x && hoveredCell.y < state.Building.GridSize.y;
-            if (_rectangleDragging && hasGridPoint)
-            {
-                _rectangleEnd = Vector2Int.Max(Vector2Int.zero,
-                    Vector2Int.Min(state.Building.GridSize - Vector2Int.one, hoveredCell));
-            }
             List<BuildingPartPlacement> selected = _selection.Resolve(floor);
             if ((_gestureUndoGroup >= 0 || _ownedControl != 0) && GUIUtility.hotControl == 0)
             {
@@ -228,12 +223,10 @@ namespace Natori.CityBuilder.Editor
                 {
                     DrawGizmos(state, floor, selected, floorHeight);
                 }
-                HandleSelection(currentEvent, state, floor, hasCell, hoveredCell, control);
+                HandleSelection(currentEvent, sceneView, state, floor, floorHeight, hasCell, hoveredCell, control);
                 if (_rectangleDragging)
                 {
-                    Vector2Int minimum = Vector2Int.Min(_rectangleStart, _rectangleEnd);
-                    Vector2Int size = Vector2Int.Max(_rectangleStart, _rectangleEnd) - minimum + Vector2Int.one;
-                    DrawRectangle(state.Building, minimum, size, floorHeight, Color.yellow);
+                    DrawScreenRectangle();
                 }
             }
             Handles.color = previousColor;
@@ -304,7 +297,7 @@ namespace Natori.CityBuilder.Editor
             }
         }
 
-        private void HandleSelection(Event currentEvent, NatoriCityBuildingEditorState state, BuildingFloor floor,
+        private void HandleSelection(Event currentEvent, SceneView sceneView, NatoriCityBuildingEditorState state, BuildingFloor floor, float floorHeight,
             bool hasCell, Vector2Int cell, int control)
         {
             if (_rectangleDragging && GUIUtility.hotControl != control)
@@ -314,13 +307,10 @@ namespace Natori.CityBuilder.Editor
             }
             if (_rectangleDragging)
             {
-                if (hasCell)
-                {
-                    _rectangleEnd = cell;
-                }
+                _rectangleEnd = currentEvent.mousePosition;
                 if (currentEvent.type == EventType.MouseUp && currentEvent.button == 0)
                 {
-                    _selection.Select(floor, NatoriCityPlacementSelection.InRectangle(floor, _rectangleStart, _rectangleEnd),
+                    _selection.Select(floor, InScreenRectangle(sceneView, state.Building, floor, floorHeight),
                         _additive, _toggle);
                     _rectangleDragging = false;
                     ReleaseControl();
@@ -333,7 +323,7 @@ namespace Natori.CityBuilder.Editor
                 RepaintSelection();
                 return;
             }
-            if (currentEvent.alt || !hasCell || currentEvent.type != EventType.MouseDown
+            if (currentEvent.alt || currentEvent.type != EventType.MouseDown
                 || currentEvent.button != 0 || GUIUtility.hotControl != 0 || HandleUtility.nearestControl != control)
             {
                 return;
@@ -342,8 +332,8 @@ namespace Natori.CityBuilder.Editor
             if (_mode == NatoriCityBuilderInteractionMode.RectangleSelection)
             {
                 _rectangleDragging = true;
-                _rectangleStart = cell;
-                _rectangleEnd = cell;
+                _rectangleStart = currentEvent.mousePosition;
+                _rectangleEnd = currentEvent.mousePosition;
                 _additive = currentEvent.shift;
                 _toggle = currentEvent.control || currentEvent.command;
                 GUIUtility.hotControl = control;
@@ -351,6 +341,10 @@ namespace Natori.CityBuilder.Editor
             }
             else
             {
+                if (!hasCell)
+                {
+                    return;
+                }
                 IReadOnlyList<BuildingPartPlacement> hits = state.ModelIndex.GetOccupancy(floor).GetPlacements(cell);
                 var picked = new List<BuildingPartPlacement>();
                 if (hits.Count > 0)
@@ -450,6 +444,7 @@ namespace Natori.CityBuilder.Editor
             }
             //表示専用の円ではなく、円周全体で入力を取得する回転ハンドルを使用する。
             //標準ハンドルがhotControlを所有するため、範囲選択のドラッグと競合しない。
+            //円周上に別のボタンを置くとその地点からドラッグできなくなるので、±90度ボタンはInspectorだけに置く。
             EditorGUI.BeginChangeCheck();
             Quaternion rotation = Handles.Disc(_rotationDrag.HandleRotation, pivot, Vector3.up, size, false, 90.0f);
             if (EditorGUI.EndChangeCheck())
@@ -475,20 +470,48 @@ namespace Natori.CityBuilder.Editor
             }
             Handles.Label(pivot + Vector3.forward * size,
                 _tool == NatoriCitySelectionToolKind.RotateGroup ? "配置全体の回転中心" : "各配置のアンカーを固定");
-            Quaternion clockwise = Quaternion.LookRotation(Vector3.back, Vector3.up);
-            Quaternion counterClockwise = Quaternion.LookRotation(Vector3.back, Vector3.up);
-            Vector3 positiveButton = pivot + Vector3.right * size;
-            Vector3 negativeButton = pivot - Vector3.right * size;
-            Handles.Label(positiveButton, "+90°");
-            Handles.Label(negativeButton, "−90°");
-            if (Handles.Button(positiveButton, clockwise, size * 0.18f, size * 0.22f, Handles.ConeHandleCap))
+        }
+
+        private List<BuildingPartPlacement> InScreenRectangle(SceneView sceneView,
+            NatoriCityBuildingComponent building, BuildingFloor floor, float height)
+        {
+            Rect rectangle = NatoriCityScreenRectangle.FromPoints(_rectangleStart, _rectangleEnd);
+            var viewport = new Rect(Vector2.zero, sceneView.camera.pixelRect.size / EditorGUIUtility.pixelsPerPoint);
+            var result = new List<BuildingPartPlacement>();
+            var corners = new Vector3[4];
+            foreach (BuildingPartPlacement placement in floor.Placements)
             {
-                Rotate(state, floor, selected, 1);
+                Vector2Int size = NatoriCityGridGeometry.GetRotatedFootprint(
+                    placement.FootprintAtPlacement, placement.QuarterTurnsClockwise);
+                Vector2Int minimum = placement.AnchorCell;
+                corners[0] = building.transform.TransformPoint(ToLocal(building, minimum, height));
+                corners[1] = building.transform.TransformPoint(ToLocal(building, minimum + new Vector2Int(0, size.y), height));
+                corners[2] = building.transform.TransformPoint(ToLocal(building, minimum + size, height));
+                corners[3] = building.transform.TransformPoint(ToLocal(building, minimum + new Vector2Int(size.x, 0), height));
+                if (NatoriCityScreenRectangle.Intersects(sceneView.camera, viewport, rectangle, corners))
+                {
+                    result.Add(placement);
+                }
             }
-            if (Handles.Button(negativeButton, counterClockwise, size * 0.18f, size * 0.22f, Handles.ConeHandleCap))
+            return result;
+        }
+
+        private void DrawScreenRectangle()
+        {
+            if (Event.current.type != EventType.Repaint)
             {
-                Rotate(state, floor, selected, -1);
+                return;
             }
+            //床へのレイ交差とは無関係に、ドラッグ開始点と現在点をGUI座標でそのまま描く。
+            Rect rectangle = NatoriCityScreenRectangle.FromPoints(_rectangleStart, _rectangleEnd);
+            Handles.BeginGUI();
+            EditorGUI.DrawRect(rectangle, new Color(0.2f, 0.7f, 1, 0.12f));
+            Color border = new Color(0.3f, 0.8f, 1, 1);
+            EditorGUI.DrawRect(new Rect(rectangle.xMin, rectangle.yMin, rectangle.width, 1), border);
+            EditorGUI.DrawRect(new Rect(rectangle.xMin, rectangle.yMax - 1, rectangle.width, 1), border);
+            EditorGUI.DrawRect(new Rect(rectangle.xMin, rectangle.yMin, 1, rectangle.height), border);
+            EditorGUI.DrawRect(new Rect(rectangle.xMax - 1, rectangle.yMin, 1, rectangle.height), border);
+            Handles.EndGUI();
         }
 
         private void FinishGesture()
