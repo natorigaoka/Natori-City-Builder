@@ -1,0 +1,24 @@
+{
+  "name": "com.natori.city-builder",
+  "version": "1.1.0",
+  "displayName": "Natori City Builder",
+  "description": "Grid-based building authoring for Unity scenes and prefabs.",
+  "unity": "6000.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/natorigaoka/Natori-City-Builder.git"
+  },
+  "dependencies": {
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.modules.jsonserialize": "1.0.0"
+  },
+  "keywords": [
+    "building",
+    "grid",
+    "level-design"
+  ],
+  "author": {
+    "name": "Natori"
+  }
+}
